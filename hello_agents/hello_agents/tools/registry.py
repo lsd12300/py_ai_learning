@@ -96,5 +96,5 @@ class ToolRegistry:
         for name, info in self._functions.items():
             descriptions.append(f"- {name}: {info['description']}")
 
-        return "\n".join(descriptions) if descriptions else "暂无可用工具。"
+        return "\n".join(descriptions) if descriptions else "暂无可用工具."
     

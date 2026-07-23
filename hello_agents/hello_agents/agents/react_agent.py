@@ -41,23 +41,105 @@ Action: 选择合适的工具获取信息，格式为：
 
 
 import re
-from typing import Optional
-from hello_agents.hello_agents.tools.registry import ToolRegistry
-from hello_agents.tools import ToolExecutor
-from hello_agents.hello_agents.core.llm import LLM
+from typing import Optional, List, Tuple
+from ..core.agent import Agent
+from ..core.llm import LLM
+from ..core.config import Config
+from ..core.message import Message
+from ..tools.registry import ToolRegistry
 
-class ReActAgent:
-    """ReAct 模式智能体"""
-    def __init__(self, llm: LLM, tool_registry: Optional[ToolRegistry] = None):
-        self.llm = llm
-        self.tools = tools
+
+
+class ReActAgent(Agent):
+    """
+    ReAct (Reasoning and Acting) Agent
+    
+    结合推理和行动的智能体，能够：
+    1. 分析问题并制定行动计划
+    2. 调用外部工具获取信息
+    3. 基于观察结果进行推理
+    4. 迭代执行直到得出最终答案
+    
+    这是一个经典的Agent范式，特别适合需要外部信息的任务。
+    """
+    def __init__(
+            self,
+            name: str,
+            llm: LLM,
+            tool_registry: Optional[ToolRegistry] = None,
+            system_prompt: Optional[str] = None,
+            config: Optional[Config] = None,
+            max_steps: int = 5,
+            custom_prompt: Optional[str] = None
+    ):
+        """
+        初始化ReActAgent
+
+        Args:
+            name: Agent名称
+            llm: LLM实例
+            tool_registry: 工具注册表（可选，如果不提供则创建空的工具注册表）
+            system_prompt: 系统提示词
+            config: 配置对象
+            max_steps: 最大执行步数
+            custom_prompt: 自定义提示词模板
+        """
+        super().__init__(name, llm, system_prompt, config)
+        if tool_registry is None:
+            self.tool_registry = ToolRegistry()
+        else:
+            self.tool_registry = tool_registry
         self.max_steps = max_steps
-        self.history = []
+        self.current_history: List[str] = []
 
-    def run(self, question: str) -> str:
-        """运行 ReAct 模式智能体 回答问题"""
-        self.history = []   # 每次运行重置历史记录
+        # 设置提示词模版: 用户自定义优先, 否则使用默认模板
+        self.prompt_template = custom_prompt if custom_prompt else REACT_PROMPT_TEMPLATE
+
+
+    def add_tool(self, tool):
+        """
+        添加工具到工具注册表
+        支持MCP工具的自动展开
+
+        Args:
+            tool: 工具实例(可以是普通Tool或MCPTool)
+        """
+        # 检查是否为MCP工具
+        if hasattr(tool, "auto_expand") and tool.auto_expand:
+            # MCP 工具自动展开为多个工具
+            if hasattr(tool, "_available_tools") and tool._available_tools:
+                for mcp_tool in tool._available_tools:
+                    pass
+                    # from ..tools.base import Tool
+                    # wrapped_tool = Tool(
+                    #     name=f"{tool.name}_{mcp_tool.name}",
+                    #     description=mcp_tool.get("description", ""),
+                    #     func=lambda input_text, t=tool: tn=mcp_tool['name']: t.run({
+                    #         "action": "call_tool",
+                    #         "tool_name": tn,
+                    #         "arguments": {"input": input_text}
+                    #     })
+                    # )
+            else:
+                self.tool_registry.add_tool(tool)
+        else:
+            self.tool_registry.add_tool(tool)
+
+
+    def run(self, input_text: str) -> str:
+        """
+        运行ReAct Agent
+        
+        Args:
+            input_text: 用户问题
+            **kwargs: 其他参数
+            
+        Returns:
+            最终答案
+        """
+        self.current_history = []   # 每次运行重置历史记录
         current_step = 0
+        print(f"\n🤖 {self.name} 开始处理问题: {input_text}")
 
         # 最大步数 防止无限循环
         while current_step < self.max_steps:
@@ -65,17 +147,17 @@ class ReActAgent:
             print(f"--- 第 {current_step} 步 ---")
 
             # 1. 格式化提示词
-            tools_desc = self.tools.getAvailableTools()
-            history_desc = "\n".join(self.history)
-            prompt = REACT_PROMPT_TEMPLATE.format(
+            tools_desc = self.tool_registry.get_tools_descriptions()
+            history_desc = "\n".join(self.current_history)
+            prompt = self.prompt_template.format(
                 tools=tools_desc,
-                question=question,
+                question=input_text,
                 history=history_desc
             )
 
             # 2. 调用 LLM 思考
             messages = [{"role": "user", "content": prompt}]
-            response = self.llm.think(messages=messages)
+            response = self.llm.invoke(messages=messages)
 
             if not response:
                 print("错误: LLM 未返回有效响应")
@@ -94,52 +176,55 @@ class ReActAgent:
             # 4. 执行 Action
             if action.startswith("Finish"):
                 # 提取最终答案
-                final_answer = re.search(r"Finish\[(.*)\]", action, re.DOTALL).group(1).strip()
+                final_answer = self._parse_action_input(action)
                 print(f"🎉 最终答案: {final_answer}")
+
+                # 保存到历史记录
+                self.add_message(Message(input_text, "user"))
+                self.add_message(Message(final_answer, "assistant"))
                 return final_answer
 
             tool_name, tool_input = self._parse_action(action)
             if not tool_name or not tool_input:
-                self.history.append(f"Observation: 无效的Action格式, 请检查.")
+                self.current_history.append(f"Observation: 无效的Action格式, 请检查.")
                 continue
             
             print(f" 行动: {tool_name}[{tool_input}]")
-            tool_func = self.tools.getTool(tool_name)
-            observation = tool_func(tool_input) if tool_func else f"错误: 未找到名为 {tool_name} 的工具."
-            
+            observation = self.tool_registry.execute_tool(tool_name, tool_input)
             print(f"👀 观察: {observation}")
-            self.history.append(f"Action: {action}")
-            self.history.append(f"Observation: {observation}")
+
+            self.current_history.append(f"Action: {action}")
+            self.current_history.append(f"Observation: {observation}")
         
         print("已达到最大步数, 流程终止.")
-        return None
+        final_answer = "抱歉，我无法在限定步数内完成这个任务。"
+        self.add_message(Message(input_text, "user"))
+        self.add_message(Message(final_answer, "assistant"))
+        
+        return final_answer
     
     
-    def _parse_output(self, output: str) -> str:
+    def _parse_output(self, output: str) -> Tuple[Optional[str], Optional[str]]:
         """解析 LLM 输出, 提取Thought和Action"""
         # Thought: 匹配到 Action: 或文本末尾
-        thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|$)", output, re.DOTALL)
+        # thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|$)", output, re.DOTALL)
+        thought_match = re.search(r"Thought: (.*)", output)
         # Action: 匹配到文本末尾
-        action_match = re.search(r"Action:\s*(.*?)$", output, re.DOTALL)
+        # action_match = re.search(r"Action:\s*(.*?)$", output, re.DOTALL)
+        action_match = re.search(r"Action: (.*)", output)
         
         thought = thought_match.group(1).strip() if thought_match else None
         action = action_match.group(1).strip() if action_match else None
         return thought, action
     
-    def _parse_action(self, action: str) -> str:
-        """解析 Action 字段, 提取工具名称和输入"""
-        match = re.search(r"(\w+)\[(.*)\]", action, re.DOTALL)
+    def _parse_action(self, action_text: str) -> Tuple[Optional[str], Optional[str]]:
+        """解析行动文本，提取工具名称和输入"""
+        match = re.match(r"(\w+)\[(.*)\]", action_text)
         if match:
             return match.group(1), match.group(2)
         return None, None
-
-
-if __name__ == "__main__":
-    from hello_agents.tools import web_search
-    llm = LLM()
-    tools = ToolExecutor()
-    tools.registerTool("web_search", "一个网页搜索引擎。当你需要回答关于时事、事实以及在你的知识库中找不到的信息时，应使用此工具。", web_search)
-    agent = ReActAgent(llm, tools)
-    question = "华为最新的手机是哪一款? 它的主要卖点是什么?"
-    answer = agent.run(question)
-    print(answer)
+    
+    def _parse_action_input(self, action_text: str) -> str:
+        """解析行动输入"""
+        match = re.match(r"\w+\[(.*)\]", action_text)
+        return match.group(1) if match else ""
