@@ -17,8 +17,8 @@
 
 
 # 正则
-import re
-import json
+# import re
+# import json
 # from transformers_process_img import PROMPT
 # # 匹配```json和```之间的内容
 # match = re.search(r"```json(.*?)```", PROMPT, re.DOTALL)
@@ -31,7 +31,20 @@ import json
 #     title = m.group(1)
 #     numbers = [int(m.group(i)) for i in range(2, 6)]
 #     print(title, numbers)
-s = """{"action": "answer", "content": "您好！我是一个智能助手，没有具体的个人名字。您可以叫我"智能助手"或根据您的需求称呼我。有什么我可以帮您的吗？"}"""
-match = re.search(r'({.*?})', s, re.DOTALL)
-print(match.group(1))
-print(json.loads(match.group(1)))
+
+# s = """{"action": "answer", "content": "您好！我是一个智能助手，没有具体的个人名字。您可以叫我"智能助手"或根据您的需求称呼我。有什么我可以帮您的吗？"}"""
+# match = re.search(r'({.*?})', s, re.DOTALL)
+# print(match.group(1))
+# print(json.loads(match.group(1)))
+
+
+
+# 流式传输和解析 CSV文件
+import csv
+import urllib.request
+
+csv_url = "https://raw.githubusercontent.com/qdrant/examples/refs/heads/master/sci-fi-books/top_100_scifi_books_full.csv"
+def parse_csv(url):
+    with urllib.request.urlopen(url) as response:
+        reader = csv.DictReader(line.decode("utf-8") for line in response)
+        yield from reader
